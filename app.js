@@ -4,17 +4,23 @@ const notes = document.getElementById("notes");
 
 const storageKey = "jarvis_notes";
 
-function loadNotes() {
-  let saved = [];
-
+function getSavedNotes() {
   try {
-    saved = JSON.parse(
-      localStorage.getItem(storageKey) || "[]"
-    );
+    return JSON.parse(localStorage.getItem(storageKey) || "[]");
   } catch (error) {
-    saved = [];
+    return [];
   }
+}
 
+function saveNoteText(noteText) {
+  const saved = getSavedNotes();
+  saved.push(noteText);
+  localStorage.setItem(storageKey, JSON.stringify(saved));
+  loadNotes();
+}
+
+function loadNotes() {
+  const saved = getSavedNotes();
   notes.innerHTML = "";
 
   saved.forEach(note => {
@@ -24,14 +30,80 @@ function loadNotes() {
   });
 }
 
+function generateReply(rawText) {
+  const text = rawText.toLowerCase();
+  const now = new Date();
+
+  if (text.includes("uhr") || text.includes("spät") || text.includes("zeit")) {
+    const time = now.toLocaleTimeString("de-DE", {
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    return `Es ist aktuell ${time} Uhr.`;
+  }
+
+  if (text.includes("datum") || text.includes("welcher tag") || text.includes("heute für ein tag")) {
+    const date = now.toLocaleDateString("de-DE", {
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+      year: "numeric"
+    });
+    return `Heute ist ${date}.`;
+  }
+
+  if (text.startsWith("notiz:") || text.startsWith("notiz ") || text.startsWith("merke dir ")) {
+    const cleaned = rawText
+      .replace(/^(notiz:|notiz|merke dir)\s*/i, "")
+      .trim();
+
+    if (!cleaned) {
+      return "Was genau soll ich mir notieren?";
+    }
+
+    saveNoteText(cleaned);
+    return `Alles klar, ich habe mir notiert: „${cleaned}“.`;
+  }
+
+  if (text.includes("notizen") || text.includes("was steht auf meiner liste")) {
+    const saved = getSavedNotes();
+    if (saved.length === 0) {
+      return "Du hast aktuell noch keine Notizen gespeichert.";
+    }
+    return `Du hast ${saved.length} Notiz(en): ${saved.join(", ")}.`;
+  }
+
+  if (text.includes("notizen löschen") || text.includes("alle notizen entfernen")) {
+    localStorage.removeItem(storageKey);
+    loadNotes();
+    return "Ich habe alle gespeicherten Notizen gelöscht.";
+  }
+
+  if (text.includes("hallo") || text.includes("hi ") || text === "hi" || text.includes("guten morgen") || text.includes("guten abend")) {
+    return "Hallo! Alle Systeme sind bereit. Wie kann ich dir helfen?";
+  }
+
+  if (text.includes("wie geht es") || text.includes("status")) {
+    return "Alle Systeme laufen einwandfrei. Ich bin bereit für deine Befehle.";
+  }
+
+  if (text.includes("wetter")) {
+    return "Für Live-Wetterdaten brauche ich noch eine Wetter-Schnittstelle – sag mir gern, wenn wir das als Nächstes einbauen sollen.";
+  }
+
+  if (text.includes("hilfe") || text.includes("was kannst du")) {
+    return "Du kannst mich nach Uhrzeit, Datum oder deinen Notizen fragen – oder sagen: „Notiz: Einkaufen“ bzw. „Notizen löschen“.";
+  }
+
+  return `Befehl empfangen: „${rawText}“. Frag mich nach „Hilfe“, um alle Befehle zu sehen.`;
+}
+
 function sendMessage() {
   const text = command.value.trim();
 
   if (!text) return;
 
-  reply.textContent =
-    "Nachricht empfangen: " + text;
-
+  reply.textContent = generateReply(text);
   command.value = "";
 }
 
@@ -49,33 +121,13 @@ document.getElementById("remember")
     const text = command.value.trim();
 
     if (!text) {
-      reply.textContent =
-        "Bitte gib zuerst eine Notiz ein.";
+      reply.textContent = "Bitte gib zuerst eine Notiz ein.";
       return;
     }
 
-    let saved = [];
-
-    try {
-      saved = JSON.parse(
-        localStorage.getItem(storageKey) || "[]"
-      );
-    } catch (error) {
-      saved = [];
-    }
-
-    saved.push(text);
-
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify(saved)
-    );
-
+    saveNoteText(text);
     command.value = "";
-    loadNotes();
-
-    reply.textContent =
-      "Notiz wurde gespeichert.";
+    reply.textContent = "Notiz wurde gespeichert.";
   });
 
 document.getElementById("voice")
@@ -94,8 +146,7 @@ document.getElementById("voice")
     recognition.lang = "de-DE";
 
     recognition.onresult = event => {
-      command.value =
-        event.results[0][0].transcript;
+      command.value = event.results[0][0].transcript;
     };
 
     recognition.onerror = () => {
