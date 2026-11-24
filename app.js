@@ -4,6 +4,29 @@ const notes = document.getElementById("notes");
 
 const storageKey = "jarvis_notes";
 
+function speak(text) {
+  if (!("speechSynthesis" in window) || !text) {
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "de-DE";
+  utterance.rate = 1.0;
+  utterance.pitch = 1.0;
+
+  window.speechSynthesis.speak(utterance);
+}
+
+function setReply(text, shouldSpeak = true) {
+  reply.textContent = text;
+
+  if (shouldSpeak) {
+    speak(text);
+  }
+}
+
 function getSavedNotes() {
   try {
     return JSON.parse(localStorage.getItem(storageKey) || "[]");
@@ -62,7 +85,7 @@ function generateReply(rawText) {
     }
 
     saveNoteText(cleaned);
-    return `Alles klar, ich habe mir notiert: „${cleaned}“.`;
+    return `Alles klar, ich habe mir notiert: ${cleaned}.`;
   }
 
   if (text.includes("notizen") || text.includes("was steht auf meiner liste")) {
@@ -88,14 +111,14 @@ function generateReply(rawText) {
   }
 
   if (text.includes("wetter")) {
-    return "Für Live-Wetterdaten brauche ich noch eine Wetter-Schnittstelle – sag mir gern, wenn wir das als Nächstes einbauen sollen.";
+    return "Für Live-Wetterdaten brauche ich noch eine Wetter-Schnittstelle.";
   }
 
   if (text.includes("hilfe") || text.includes("was kannst du")) {
-    return "Du kannst mich nach Uhrzeit, Datum oder deinen Notizen fragen – oder sagen: „Notiz: Einkaufen“ bzw. „Notizen löschen“.";
+    return "Du kannst mich nach Uhrzeit, Datum oder deinen Notizen fragen, oder sagen: Notiz Einkaufen.";
   }
 
-  return `Befehl empfangen: „${rawText}“. Frag mich nach „Hilfe“, um alle Befehle zu sehen.`;
+  return `Befehl empfangen: ${rawText}.`;
 }
 
 function sendMessage() {
@@ -103,8 +126,9 @@ function sendMessage() {
 
   if (!text) return;
 
-  reply.textContent = generateReply(text);
+  const answer = generateReply(text);
   command.value = "";
+  setReply(answer, true);
 }
 
 document.getElementById("send")
@@ -121,13 +145,13 @@ document.getElementById("remember")
     const text = command.value.trim();
 
     if (!text) {
-      reply.textContent = "Bitte gib zuerst eine Notiz ein.";
+      setReply("Bitte gib zuerst eine Notiz ein.", true);
       return;
     }
 
     saveNoteText(text);
     command.value = "";
-    reply.textContent = "Notiz wurde gespeichert.";
+    setReply("Notiz wurde gespeichert.", true);
   });
 
 document.getElementById("voice")
@@ -137,8 +161,10 @@ document.getElementById("voice")
       window.webkitSpeechRecognition;
 
     if (!Recognition) {
-      reply.textContent =
-        "Spracheingabe wird in diesem Browser nicht unterstützt.";
+      setReply(
+        "Spracheingabe wird in diesem Browser nicht unterstützt.",
+        false
+      );
       return;
     }
 
@@ -150,12 +176,14 @@ document.getElementById("voice")
     };
 
     recognition.onerror = () => {
-      reply.textContent =
-        "Spracheingabe konnte nicht gestartet werden.";
+      setReply(
+        "Spracheingabe konnte nicht gestartet werden.",
+        false
+      );
     };
 
     recognition.start();
-    reply.textContent = "Ich höre zu ...";
+    setReply("Ich höre zu ...", false);
   });
 
 loadNotes();
