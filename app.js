@@ -241,7 +241,7 @@ function generateReply(inputText) {
 
   // Hinzufügen: "Setze Milch auf die Einkaufsliste" / "Einkaufsliste: Milch und Brot"
   match =
-    rawText.match(/^(?:setze|setz|schreibe|schreib|pack|packe)\s+(.+?)\s+auf\s+die\s+einkaufsliste$/i) ||
+    rawText.match(/^(?:setze|setzte|setzt|setz|setzen|schreibe|schreib|pack|packe|füge|tu)\s+(.+?)\s+auf\s+die\s+einkaufsliste$/i) ||
     rawText.match(/^(?:setze auf die einkaufsliste|auf die einkaufsliste|einkaufsliste|einkauf)\s*:?\s+(.+)$/i);
 
   if (match) {
