@@ -1,95 +1,60 @@
-
-
 <!DOCTYPE html>
-
 <html lang="de">
-
 <head>
-
   <meta charset="UTF-8">
-
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
   <meta name="theme-color" content="#100b0a">
-
   <title>J.A.R.V.I.S.</title>
-
-  <link rel="stylesheet" href="style.css">
-
+  <link rel="stylesheet" href="style.css?v=2">
 </head>
-
 <body>
-
   <main class="container">
-
     <header>
-
       <div class="logo">J.A.R.V.I.S.</div>
-
       <div class="status">● SYSTEM BEREIT</div>
-
     </header>
 
     <section class="hero">
-
       <div class="arc">
-
         <div class="core"></div>
-
       </div>
-
       <p>PERSONAL ASSISTANT</p>
-
       <h1>Wie kann ich <span>helfen?</span></h1>
-
       <p class="subtitle">Dein persönlicher Assistent</p>
-
     </section>
 
     <section class="panel">
-
       <label for="command">NACHRICHT AN JARVIS</label>
-
       <div class="input-row">
-
-        <input id="command" placeholder="Schreib mir etwas ...">
-
+        <input id="command" placeholder="Schreib mir etwas ..." autocomplete="off">
         <button id="send">➜</button>
-
       </div>
-
       <div class="buttons">
-
         <button id="voice">🎙 Sprache</button>
-
         <button id="remember">✚ Notiz speichern</button>
-
       </div>
-
     </section>
 
     <section class="panel">
-
       <h3>JARVIS ANTWORT</h3>
-
       <p id="reply">System bereit. Ich warte auf deinen Befehl.</p>
-
     </section>
 
     <section class="panel">
-
       <h3>MEINE NOTIZEN</h3>
-
       <ul id="notes"></ul>
-
     </section>
 
-    <footer>J.A.R.V.I.S. · BUILD 0.1</footer>
+    <section class="panel">
+      <h3>EINKAUFSLISTE</h3>
+      <ul id="shopping-list"></ul>
+    </section>
 
+    <footer>J.A.R.V.I.S. · BUILD 0.2</footer>
   </main>
 
-  <script src="app.js"></script>
-
+  <script src="app.js?v=2"></script>
 </body>
-
 </html>
+
+
