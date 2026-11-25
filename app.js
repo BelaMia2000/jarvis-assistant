@@ -1,8 +1,56 @@
 const command = document.getElementById("command");
 const reply = document.getElementById("reply");
 const notes = document.getElementById("notes");
+const shoppingListEl = document.getElementById("shopping-list");
 
-const storageKey = "jarvis_notes";
+const wakeWord = "jarvis";
+
+let keepListening = false;
+let isRecognizing = false;
+let currentRecognition = null;
+
+// Zentrales Gedächtnis-Modul (aktuell lokal, später 1:1 durch MacBook-Sync austauschbar)
+const JarvisMemory = {
+  keys: {
+    notes: "jarvis_notes",
+    shopping: "jarvis_shopping_list"
+  },
+
+  getList(key) {
+    try {
+      return JSON.parse(localStorage.getItem(key) || "[]");
+    } catch (error) {
+      return [];
+    }
+  },
+
+  saveList(key, items) {
+    localStorage.setItem(key, JSON.stringify(items));
+  },
+
+  getNotes() {
+    return this.getList(this.keys.notes);
+  },
+
+  addNote(text) {
+    const current = this.getNotes();
+    current.push(text);
+    this.saveList(this.keys.notes, current);
+    return current;
+  },
+
+  clearNotes() {
+    this.saveList(this.keys.notes, []);
+  },
+
+  getShoppingList() {
+    return this.getList(this.keys.shopping);
+  },
+
+  saveShoppingList(items) {
+    this.saveList(this.keys.shopping, items);
+  }
+};
 
 function speak(text) {
   if (!("speechSynthesis" in window) || !text) {
@@ -16,6 +64,12 @@ function speak(text) {
   utterance.rate = 1.0;
   utterance.pitch = 1.0;
 
+  utterance.onend = () => {
+    if (keepListening) {
+      startVoiceRecognition(true);
+    }
+  };
+
   window.speechSynthesis.speak(utterance);
 }
 
@@ -27,23 +81,32 @@ function setReply(text, shouldSpeak = true) {
   }
 }
 
-function getSavedNotes() {
-  try {
-    return JSON.parse(localStorage.getItem(storageKey) || "[]");
-  } catch (error) {
-    return [];
+// Entfernt Satzzeichen am Ende (die Spracherkennung hängt oft einen Punkt an)
+function stripPunctuation(text) {
+  return text.trim().replace(/[\s.!?,;:]+$/, "").trim();
+}
+
+function extractCommandWithWakeWord(rawText) {
+  const trimmed = rawText.trim();
+  const escapedWakeWord = wakeWord.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const wakeRegex = new RegExp(`^${escapedWakeWord}[\\s,:;.-]+(.+)$`, "i");
+  const onlyWakeRegex = new RegExp(`^${escapedWakeWord}[\\s.!?]*$`, "i");
+
+  if (onlyWakeRegex.test(trimmed)) {
+    return { wakeDetected: true, onlyWake: true, cleanedText: "" };
   }
+
+  const match = trimmed.match(wakeRegex);
+  if (match) {
+    return { wakeDetected: true, onlyWake: false, cleanedText: match[1].trim() };
+  }
+
+  return { wakeDetected: false, onlyWake: false, cleanedText: trimmed };
 }
 
-function saveNoteText(noteText) {
-  const saved = getSavedNotes();
-  saved.push(noteText);
-  localStorage.setItem(storageKey, JSON.stringify(saved));
-  loadNotes();
-}
-
-function loadNotes() {
-  const saved = getSavedNotes();
+function renderNotes() {
+  if (!notes) return;
+  const saved = JarvisMemory.getNotes();
   notes.innerHTML = "";
 
   saved.forEach(note => {
@@ -53,15 +116,165 @@ function loadNotes() {
   });
 }
 
-function generateReply(rawText) {
+function renderShoppingList() {
+  if (!shoppingListEl) return;
+  const items = JarvisMemory.getShoppingList();
+  shoppingListEl.innerHTML = "";
+
+  items.forEach(item => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    shoppingListEl.appendChild(li);
+  });
+}
+
+function addShoppingItems(rawItemsText) {
+  const parts = rawItemsText
+    .split(/,| und /i)
+    .map(part => stripPunctuation(part))
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const current = JarvisMemory.getShoppingList();
+  const added = [];
+
+  parts.forEach(item => {
+    const exists = current.some(existing => existing.toLowerCase() === item.toLowerCase());
+    if (!exists) {
+      current.push(item);
+      added.push(item);
+    }
+  });
+
+  JarvisMemory.saveShoppingList(current);
+  renderShoppingList();
+  return added;
+}
+
+function removeShoppingItem(targetItem) {
+  const cleanedTarget = stripPunctuation(targetItem).toLowerCase();
+  const current = JarvisMemory.getShoppingList();
+  const remaining = current.filter(item => item.toLowerCase() !== cleanedTarget);
+
+  if (remaining.length === current.length) {
+    return false;
+  }
+
+  JarvisMemory.saveShoppingList(remaining);
+  renderShoppingList();
+  return true;
+}
+
+function readShoppingList() {
+  const items = JarvisMemory.getShoppingList();
+  if (items.length === 0) {
+    return "Deine Einkaufsliste ist aktuell leer.";
+  }
+  return `Auf deiner Einkaufsliste stehen ${items.length} Einträge: ${items.join(", ")}.`;
+}
+
+function generateReply(inputText) {
+  const rawText = stripPunctuation(inputText);
   const text = rawText.toLowerCase();
   const now = new Date();
+  let match;
+
+  // ---------- Notizen (vor Uhrzeit, damit "Notiz: 15 Uhr Arzt" gespeichert wird) ----------
+
+  if (text.includes("notizen löschen") || text.includes("alle notizen entfernen")) {
+    JarvisMemory.clearNotes();
+    renderNotes();
+    return "Ich habe alle gespeicherten Notizen gelöscht.";
+  }
+
+  if (text.startsWith("notiz:") || text.startsWith("notiz ") || text.startsWith("merke dir ")) {
+    const cleaned = rawText.replace(/^(notiz:|notiz|merke dir)\s*/i, "").trim();
+
+    if (!cleaned) {
+      return "Was genau soll ich mir notieren?";
+    }
+
+    JarvisMemory.addNote(cleaned);
+    renderNotes();
+    return `Alles klar, ich habe mir notiert: ${cleaned}.`;
+  }
+
+  if (text.includes("notizen") || text.includes("was steht auf meiner liste")) {
+    const saved = JarvisMemory.getNotes();
+    if (saved.length === 0) {
+      return "Du hast aktuell noch keine Notizen gespeichert.";
+    }
+    return `Du hast ${saved.length} Notiz(en): ${saved.join(", ")}.`;
+  }
+
+  // ---------- Einkaufsliste ----------
+
+  // Leeren
+  if (
+    text.includes("einkaufsliste löschen") ||
+    text.includes("einkaufsliste leeren") ||
+    text.includes("einkauf löschen")
+  ) {
+    JarvisMemory.saveShoppingList([]);
+    renderShoppingList();
+    return "Ich habe deine Einkaufsliste geleert.";
+  }
+
+  // Streichen: "Streiche Milch von der Einkaufsliste" / "Einkaufsliste streichen Milch"
+  match =
+    rawText.match(/^(?:streiche|streich|lösche|lösch|entferne|nimm)\s+(.+?)\s+(?:von|aus)\s+der\s+einkaufsliste(?:\s+weg)?$/i) ||
+    rawText.match(/^(?:von der\s+)?einkaufsliste\s+(?:streichen|entfernen)\s*:?\s*(.*)$/i);
+
+  if (match) {
+    const itemToRemove = stripPunctuation(match[1] || "");
+    if (!itemToRemove) {
+      return "Welchen Eintrag soll ich von der Einkaufsliste streichen?";
+    }
+    if (removeShoppingItem(itemToRemove)) {
+      return `Ich habe ${itemToRemove} von der Einkaufsliste gestrichen.`;
+    }
+    return `${itemToRemove} stand nicht auf deiner Einkaufsliste.`;
+  }
+
+  // Hinzufügen: "Setze Milch auf die Einkaufsliste" / "Einkaufsliste: Milch und Brot"
+  match =
+    rawText.match(/^(?:setze|setz|schreibe|schreib|pack|packe)\s+(.+?)\s+auf\s+die\s+einkaufsliste$/i) ||
+    rawText.match(/^(?:setze auf die einkaufsliste|auf die einkaufsliste|einkaufsliste|einkauf)\s*:?\s+(.+)$/i);
+
+  if (match) {
+    const rest = match[1].trim();
+
+    // "Einkaufsliste vorlesen" soll vorlesen, nicht "vorlesen" eintragen
+    if (/^(vorlesen|lesen|zeigen|anzeigen|bitte|ansagen)$/i.test(rest)) {
+      return readShoppingList();
+    }
+
+    const added = addShoppingItems(rest);
+    if (!added) {
+      return "Was soll ich auf die Einkaufsliste setzen?";
+    }
+    if (added.length === 0) {
+      return "Das steht bereits auf deiner Einkaufsliste.";
+    }
+    return `Ich habe ${added.join(" und ")} auf die Einkaufsliste gesetzt.`;
+  }
+
+  // Vorlesen
+  if (
+    text.includes("einkaufsliste") ||
+    text.includes("was muss ich einkaufen") ||
+    text.includes("was steht auf dem einkauf")
+  ) {
+    return readShoppingList();
+  }
+
+  // ---------- Allgemein ----------
 
   if (text.includes("uhr") || text.includes("spät") || text.includes("zeit")) {
-    const time = now.toLocaleTimeString("de-DE", {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
+    const time = now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
     return `Es ist aktuell ${time} Uhr.`;
   }
 
@@ -75,34 +288,7 @@ function generateReply(rawText) {
     return `Heute ist ${date}.`;
   }
 
-  if (text.startsWith("notiz:") || text.startsWith("notiz ") || text.startsWith("merke dir ")) {
-    const cleaned = rawText
-      .replace(/^(notiz:|notiz|merke dir)\s*/i, "")
-      .trim();
-
-    if (!cleaned) {
-      return "Was genau soll ich mir notieren?";
-    }
-
-    saveNoteText(cleaned);
-    return `Alles klar, ich habe mir notiert: ${cleaned}.`;
-  }
-
-  if (text.includes("notizen") || text.includes("was steht auf meiner liste")) {
-    const saved = getSavedNotes();
-    if (saved.length === 0) {
-      return "Du hast aktuell noch keine Notizen gespeichert.";
-    }
-    return `Du hast ${saved.length} Notiz(en): ${saved.join(", ")}.`;
-  }
-
-  if (text.includes("notizen löschen") || text.includes("alle notizen entfernen")) {
-    localStorage.removeItem(storageKey);
-    loadNotes();
-    return "Ich habe alle gespeicherten Notizen gelöscht.";
-  }
-
-  if (text.includes("hallo") || text.includes("hi ") || text === "hi" || text.includes("guten morgen") || text.includes("guten abend")) {
+  if (text.includes("hallo") || text.startsWith("hi ") || text === "hi" || text.includes("guten morgen") || text.includes("guten abend")) {
     return "Hallo! Alle Systeme sind bereit. Wie kann ich dir helfen?";
   }
 
@@ -115,24 +301,84 @@ function generateReply(rawText) {
   }
 
   if (text.includes("hilfe") || text.includes("was kannst du")) {
-    return "Du kannst mich nach Uhrzeit, Datum oder deinen Notizen fragen, oder sagen: Notiz Einkaufen.";
+    return "Du kannst mich nach Uhrzeit, Datum, Notizen oder deiner Einkaufsliste fragen. Zum Beispiel: Setze Milch auf die Einkaufsliste.";
   }
 
   return `Befehl empfangen: ${rawText}.`;
 }
 
-function sendMessage() {
-  const text = command.value.trim();
+function processInput(rawText) {
+  const parsed = extractCommandWithWakeWord(rawText);
 
-  if (!text) return;
+  if (parsed.onlyWake) {
+    setReply("Ja, ich bin da. Was kann ich für dich tun?", true);
+    return;
+  }
 
-  const answer = generateReply(text);
+  const finalText = parsed.cleanedText;
+  if (!finalText) return;
+
+  const answer = generateReply(finalText);
   command.value = "";
   setReply(answer, true);
 }
 
-document.getElementById("send")
-  .addEventListener("click", sendMessage);
+function sendMessage() {
+  const text = command.value.trim();
+  if (!text) return;
+  processInput(text);
+}
+
+function startVoiceRecognition(silentStart = false) {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!Recognition) {
+    setReply("Spracheingabe wird in diesem Browser nicht unterstützt.", false);
+    return;
+  }
+
+  if (isRecognizing) return;
+
+  const recognition = new Recognition();
+  currentRecognition = recognition;
+  recognition.lang = "de-DE";
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+
+  recognition.onstart = () => {
+    isRecognizing = true;
+    if (!silentStart) {
+      setReply("Ich höre zu ...", false);
+    }
+  };
+
+  recognition.onresult = event => {
+    const spokenText = event.results[0][0].transcript.trim();
+    command.value = spokenText;
+    processInput(spokenText);
+  };
+
+  recognition.onerror = () => {
+    isRecognizing = false;
+    setReply("Spracheingabe konnte nicht gestartet werden.", false);
+  };
+
+  recognition.onend = () => {
+    isRecognizing = false;
+    currentRecognition = null;
+  };
+
+  recognition.start();
+}
+
+function stopVoiceRecognition() {
+  if (currentRecognition) {
+    currentRecognition.stop();
+  }
+  window.speechSynthesis && window.speechSynthesis.cancel();
+}
+
+document.getElementById("send").addEventListener("click", sendMessage);
 
 command.addEventListener("keydown", event => {
   if (event.key === "Enter") {
@@ -140,50 +386,31 @@ command.addEventListener("keydown", event => {
   }
 });
 
-document.getElementById("remember")
-  .addEventListener("click", () => {
-    const text = command.value.trim();
+document.getElementById("remember").addEventListener("click", () => {
+  const text = command.value.trim();
 
-    if (!text) {
-      setReply("Bitte gib zuerst eine Notiz ein.", true);
-      return;
-    }
+  if (!text) {
+    setReply("Bitte gib zuerst eine Notiz ein.", true);
+    return;
+  }
 
-    saveNoteText(text);
-    command.value = "";
-    setReply("Notiz wurde gespeichert.", true);
-  });
+  JarvisMemory.addNote(text);
+  renderNotes();
+  command.value = "";
+  setReply("Notiz wurde gespeichert.", true);
+});
 
-document.getElementById("voice")
-  .addEventListener("click", () => {
-    const Recognition =
-      window.SpeechRecognition ||
-      window.webkitSpeechRecognition;
+// Mikrofon-Knopf: 1x tippen = Weiterhören an, nochmal tippen = aus
+document.getElementById("voice").addEventListener("click", () => {
+  keepListening = !keepListening;
 
-    if (!Recognition) {
-      setReply(
-        "Spracheingabe wird in diesem Browser nicht unterstützt.",
-        false
-      );
-      return;
-    }
+  if (keepListening) {
+    startVoiceRecognition(false);
+  } else {
+    stopVoiceRecognition();
+    setReply("Zuhören beendet.", false);
+  }
+});
 
-    const recognition = new Recognition();
-    recognition.lang = "de-DE";
-
-    recognition.onresult = event => {
-      command.value = event.results[0][0].transcript;
-    };
-
-    recognition.onerror = () => {
-      setReply(
-        "Spracheingabe konnte nicht gestartet werden.",
-        false
-      );
-    };
-
-    recognition.start();
-    setReply("Ich höre zu ...", false);
-  });
-
-loadNotes();
+renderNotes();
+renderShoppingList();
