@@ -17,7 +17,8 @@ const JarvisMemory = {
     notes: "jarvis_notes",
     shopping: "jarvis_shopping_list",
     todos: "jarvis_todos",
-    reminders: "jarvis_reminders"
+    reminders: "jarvis_reminders",
+    aiKey: "jarvis_gemini_key"
   },
 
   getList(key) {
@@ -70,6 +71,19 @@ const JarvisMemory = {
 
   saveReminders(items) {
     this.saveList(this.keys.reminders, items);
+  },
+
+  // KI-Schlüssel bleibt nur auf diesem Gerät (nicht im Code auf GitHub!)
+  getAiKey() {
+    return localStorage.getItem(this.keys.aiKey) || "";
+  },
+
+  saveAiKey(key) {
+    if (key) {
+      localStorage.setItem(this.keys.aiKey, key);
+    } else {
+      localStorage.removeItem(this.keys.aiKey);
+    }
   }
 };
 
@@ -369,6 +383,105 @@ function checkReminders(onStartup = false) {
   }
 }
 
+// ---------- Persönliche KI (Google Gemini, kostenlose Stufe) ----------
+
+// Modellnamen ändern sich bei Google öfter. Jarvis probiert sie der Reihe nach.
+const AI_MODELS = [
+  "gemini-flash-latest",
+  "gemini-3.8-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite"
+];
+let workingModel = null;
+let aiHistory = [];
+
+const AI_PERSONALITY =
+  "Du bist J.A.R.V.I.S., ein persönlicher KI-Butler im Stil von Iron Man: " +
+  "intelligent, freundlich, höflich und mit einem Hauch trockenem Humor. " +
+  "Antworte immer auf Deutsch und duze die Nutzerin. " +
+  "Deine Antworten werden laut vorgelesen: Antworte kurz (meist 1 bis 4 Sätze), " +
+  "ohne Aufzählungszeichen, ohne Sternchen, ohne Markdown und ohne Emojis. " +
+  "Wenn du etwas nicht sicher weißt oder es aktuelle Infos bräuchte, sag das ehrlich.";
+
+function cleanAiText(text) {
+  return text
+    .replace(/[*_#`>]+/g, "")
+    .replace(/^\s*[-•]\s+/gm, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
+async function callGemini(model, key) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": key
+      },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: AI_PERSONALITY }] },
+        contents: aiHistory
+      })
+    }
+  );
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error((data.error && data.error.message) || `Fehler ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content &&
+    data.candidates[0].content.parts) || [];
+  return parts.map(p => p.text || "").join(" ").trim();
+}
+
+async function askAI(question) {
+  const key = JarvisMemory.getAiKey();
+  if (!key) {
+    return "Für freie Gespräche brauche ich noch deinen KI-Schlüssel. Tippe dazu auf KI-Schlüssel.";
+  }
+
+  aiHistory.push({ role: "user", parts: [{ text: question }] });
+  aiHistory = aiHistory.slice(-12); // nur die letzten Nachrichten merken
+
+  const models = workingModel ? [workingModel, ...AI_MODELS.filter(m => m !== workingModel)] : AI_MODELS;
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const answer = await callGemini(model, key);
+      if (!answer) continue;
+      workingModel = model;
+      aiHistory.push({ role: "model", parts: [{ text: answer }] });
+      return cleanAiText(answer);
+    } catch (error) {
+      lastError = error;
+      // Schlüssel falsch -> nicht weiter probieren
+      if (error.status === 400 && /api key/i.test(error.message)) break;
+      if (error.status === 401 || error.status === 403) break;
+      // 404 (Modell gibt es nicht) oder 429 (Limit erreicht) -> nächstes Modell probieren
+    }
+  }
+
+  aiHistory.pop();
+
+  if (lastError && (lastError.status === 401 || lastError.status === 403 || /api key/i.test(lastError.message))) {
+    return "Dein KI-Schlüssel funktioniert nicht. Bitte tippe auf KI-Schlüssel und gib ihn neu ein.";
+  }
+  if (lastError && lastError.status === 429) {
+    return "Das kostenlose Tageslimit der KI ist gerade erreicht. Versuch es später nochmal.";
+  }
+  if (!navigator.onLine) {
+    return "Ich habe gerade keine Internetverbindung.";
+  }
+  return "Die KI hat gerade nicht geantwortet. Versuch es bitte gleich nochmal.";
+}
+
 function generateReply(inputText) {
   // Verhörer der Spracherkennung vereinheitlichen ("Einlaufsliste", "Einkaufs Liste" ...)
   const rawText = stripPunctuation(inputText)
@@ -397,7 +510,7 @@ function generateReply(inputText) {
     return `Alles klar, ich habe mir notiert: ${cleaned}.`;
   }
 
-  if (text.includes("notizen") || text.includes("was steht auf meiner liste")) {
+  if (/(meine notizen|notizen vorlesen|welche notizen|^notizen$|was steht auf meiner liste)/.test(text)) {
     const saved = JarvisMemory.getNotes();
     if (saved.length === 0) {
       return "Du hast aktuell noch keine Notizen gespeichert.";
@@ -488,7 +601,7 @@ function generateReply(inputText) {
     return `Alles klar, ich erinnere dich ${formatTime(parsed.time)} an: ${parsed.text}. Lass die App dafür bitte geöffnet.`;
   }
 
-  if (text.includes("erinnerungen") || text.includes("welche erinnerung")) {
+  if (/(meine erinnerungen|welche erinnerungen|erinnerungen vorlesen|^erinnerungen$)/.test(text)) {
     return readReminders();
   }
 
@@ -531,24 +644,18 @@ function generateReply(inputText) {
     return `Ich habe die Aufgabe ${added} hinzugefügt.`;
   }
 
-  if (
-    text.includes("aufgaben") ||
-    text.includes("to-do") ||
-    text.includes("todo") ||
-    text.includes("was muss ich heute") ||
-    text.includes("was steht heute an")
-  ) {
+  if (/(meine aufgaben|welche aufgaben|offene aufgaben|aufgaben vorlesen|aufgabenliste|^aufgaben$|to-?do|was muss ich heute|was steht heute an)/.test(text)) {
     return readTodos();
   }
 
   // ---------- Allgemein ----------
 
-  if (text.includes("uhr") || text.includes("spät") || text.includes("zeit")) {
+  if (/(wie spät|uhrzeit|wie viel uhr|wieviel uhr|welche zeit)/.test(text) || text === "uhr" || text === "zeit") {
     const time = now.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
     return `Es ist aktuell ${time} Uhr.`;
   }
 
-  if (text.includes("datum") || text.includes("welcher tag") || text.includes("heute für ein tag")) {
+  if (/(welches datum|datum heute|^datum$|welcher tag ist|heute für ein tag|den wievielten)/.test(text)) {
     const date = now.toLocaleDateString("de-DE", {
       weekday: "long",
       day: "2-digit",
@@ -558,11 +665,11 @@ function generateReply(inputText) {
     return `Heute ist ${date}.`;
   }
 
-  if (text.includes("hallo") || text.startsWith("hi ") || text === "hi" || text.includes("guten morgen") || text.includes("guten abend")) {
+  if (/^(hallo|hi|hey|guten morgen|guten tag|guten abend)( jarvis)?$/.test(text)) {
     return "Hallo! Alle Systeme sind bereit. Wie kann ich dir helfen?";
   }
 
-  if (text.includes("wie geht es") || text.includes("status")) {
+  if (/^(wie geht es dir|wie gehts|wie geht's|status|systemstatus)$/.test(text)) {
     return "Alle Systeme laufen einwandfrei. Ich bin bereit für deine Befehle.";
   }
 
@@ -570,11 +677,17 @@ function generateReply(inputText) {
     return "Für Live-Wetterdaten brauche ich noch eine Wetter-Schnittstelle.";
   }
 
-  if (text.includes("hilfe") || text.includes("was kannst du")) {
-    return "Ich kann Uhrzeit und Datum sagen, Notizen, Einkaufsliste und Aufgaben führen und dich erinnern. Zum Beispiel: Aufgabe Mathe lernen, oder: Erinnere mich in 10 Minuten an den Herd.";
+  if (text.includes("neues gespräch") || text.includes("gespräch zurücksetzen") || text.includes("vergiss das gespräch")) {
+    aiHistory = [];
+    return "In Ordnung, wir fangen ein neues Gespräch an.";
   }
 
-  return `Befehl empfangen: ${rawText}.`;
+  if (text === "hilfe" || text.includes("was kannst du")) {
+    return "Ich kann Uhrzeit und Datum sagen, Notizen, Einkaufsliste und Aufgaben führen und dich erinnern. Zum Beispiel: Aufgabe Mathe lernen, oder: Erinnere mich in 10 Minuten an den Herd. Alles andere kannst du mich einfach fragen.";
+  }
+
+  // Kein fester Befehl erkannt -> die KI antwortet
+  return null;
 }
 
 function processInput(rawText) {
@@ -588,9 +701,16 @@ function processInput(rawText) {
   const finalText = parsed.cleanedText;
   if (!finalText) return;
 
-  const answer = generateReply(finalText);
   command.value = "";
-  setReply(answer, true);
+  const answer = generateReply(finalText);
+
+  if (answer !== null) {
+    setReply(answer, true);
+    return;
+  }
+
+  setReply("Einen Moment, ich denke nach ...", false);
+  askAI(finalText).then(aiAnswer => setReply(aiAnswer, true));
 }
 
 function sendMessage() {
@@ -669,6 +789,26 @@ document.getElementById("remember").addEventListener("click", () => {
   command.value = "";
   setReply("Notiz wurde gespeichert.", true);
 });
+
+// KI-Schlüssel eingeben (wird nur auf diesem Gerät gespeichert)
+const aiKeyButton = document.getElementById("ai-key");
+if (aiKeyButton) {
+  aiKeyButton.addEventListener("click", () => {
+    const current = JarvisMemory.getAiKey();
+    const input = window.prompt(
+      current
+        ? "KI-Schlüssel ist gespeichert. Neuen Schlüssel einfügen oder Feld leeren zum Löschen:"
+        : "Füge hier deinen Gemini-Schlüssel aus Google AI Studio ein:",
+      ""
+    );
+    if (input === null) return; // abgebrochen
+
+    const key = input.trim();
+    JarvisMemory.saveAiKey(key);
+    workingModel = null;
+    setReply(key ? "KI-Schlüssel gespeichert. Du kannst mich jetzt alles fragen." : "KI-Schlüssel gelöscht.", true);
+  });
+}
 
 // Mikrofon-Knopf: 1x tippen = Weiterhören an, nochmal tippen = aus
 document.getElementById("voice").addEventListener("click", () => {
